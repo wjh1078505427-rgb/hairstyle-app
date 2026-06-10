@@ -44,7 +44,7 @@ PROVIDERS = {
     },
 }
 
-DEFAULT_PROVIDER = "grsai"
+DEFAULT_PROVIDER = "google"
 
 # ── 转换模式 ────────────────────────────────────────────
 
@@ -113,3 +113,4 @@ PRICING = {
 }
 
 FREE_TRIAL_LIMIT = 5
+
