@@ -1,0 +1,26 @@
+# 环境变量（含 API Key）
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Streamlit
+.streamlit/
+
+# 运行时数据
+data/
+
+# 临时文件
+tmp/
+*.tmp
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
