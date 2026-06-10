@@ -11,8 +11,8 @@ PROVIDERS = {
     "grsai": {
         "name": "🚌 GrsAI（gpt-image-2，推荐）",
         "base_url": "https://grsai.dakka.com.cn",
-        "model": "gpt-image-2",
-        "model_pro": "nano-banana-fast",
+        "model": "nano-banana-pro",
+        "model_pro": "nano-banana-pro",
         "cost_per_call": 0.02,
         "free_daily": "注册送 1000 积分 + 兑换码送 10 万积分",
         "setup_url": "https://grsai.com",
@@ -44,7 +44,7 @@ PROVIDERS = {
     },
 }
 
-DEFAULT_PROVIDER = "google"
+DEFAULT_PROVIDER = "grsai"
 
 # ── 转换模式 ────────────────────────────────────────────
 
@@ -53,27 +53,7 @@ TRANSFER_MODES = {
         "label": "💇 换发型",
         "icon": "💇",
         "prompt_template": (
-            "Task: Give the person in Image 1 the hairstyle from Image 2. "
-            "CRITICAL — Head pose & angle adaptation: "
-            "Image 1 and Image 2 may have different head angles, tilts, or camera positions. "
-            "You MUST first detect the exact head orientation, camera angle, and face direction in Image 1. "
-            "Then mentally rotate and adjust the hairstyle from Image 2 to fit Image 1's angle. "
-            "The hairstyle should look like it naturally exists on Image 1's head at THAT angle — "
-            "not pasted from a different perspective. Hair volume, part line placement, and fringe shape "
-            "must all respect the 3D orientation of Image 1's head. "
-            "Lighting & shadow: "
-            "Analyze the light source direction, intensity, and color temperature in Image 1. "
-            "Re-light the new hairstyle to match exactly — natural scalp shadows at the hairline, "
-            "consistent highlight placement, same ambient occlusion. "
-            "Hair physics & scale: "
-            "Measure the head size in Image 1. Scale the hairstyle from Image 2 proportionally. "
-            "Do NOT copy hair volume literally — adapt it to the actual head dimensions in Image 1. "
-            "If Image 2 shows long hair, render it falling naturally with gravity relative to Image 1's head tilt. "
-            "Identity preservation: "
-            "Keep the person's face, facial features, expression, skin tone, and clothing identical to Image 1. "
-            "Only the hair changes. "
-            "Output: a SINGLE realistic photograph — same person, same background, same lighting, new hairstyle. "
-            "No text, no watermark, no split-screen, no before/after collage."
+            "图一换上图二的发型，自然合理光影正常"
         ),
     },
     "outfit": {
@@ -122,5 +102,21 @@ PRICING = {
     "consult": {"uses": 1, "price": 29.9, "label": "AI 形象咨询"},
 }
 
-FREE_TRIAL_LIMIT = 5
+FREE_TRIAL_LIMIT = 1
+
+# ── 积分定价 ──────────────────────────────────────────────
+
+POINTS_PER_USE = 888          # 每次生成消耗积分
+POINTS_REGISTER_BONUS = 888   # 注册赠送积分
+POINTS_MONTHLY = 10000        # 包月积分
+POINTS_MONTHLY_PRICE = 9.9    # 包月价格（元）
+
+# ── 验证码 ─────────────────────────────────────────────────
+
+CODE_LENGTH = 6               # 验证码位数
+CODE_EXPIRE_MINUTES = 5       # 有效期（分钟）
+CODE_MAX_ATTEMPTS = 3         # 最大尝试次数
+CODE_RESEND_SECONDS = 60      # 重发间隔（秒）
+IP_MAX_CODES_PER_HOUR = 3     # 同IP每小时最多发验证码次数
+IP_MAX_CODES_PER_DAY = 5      # 同IP每天最多发验证码次数
 

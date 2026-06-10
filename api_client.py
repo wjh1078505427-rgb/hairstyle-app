@@ -123,15 +123,16 @@ def _call_grsai_api(
         "Authorization": f"Bearer {api_key}",
     }
 
-    with httpx.Client(timeout=30.0) as client:
-        # 1. 创建任务 — 使用 /v1/draw/completions 端点
+    with httpx.Client(timeout=900.0) as client:
+        # 1. 创建任务 — 使用 Nano Banana 专用端点
         create_resp = client.post(
-            f"{base_url}/v1/draw/completions",
+            f"{base_url}/v1/draw/nano-banana",
             headers=headers,
             json={
                 "model": provider["model"],
                 "prompt": prompt,
-                "aspectRatio": "1024x1024",
+                "aspectRatio": "auto",
+                "imageSize": "1K",
                 "urls": [user_data_uri, ref_data_uri],
                 "webHook": "-1",
                 "shutProgress": True,
@@ -146,8 +147,8 @@ def _call_grsai_api(
 
         task_id = create_data["data"]["id"]
 
-        # 2. 轮询结果（最多等 120 秒，gpt-image-2 较慢）
-        for attempt in range(30):
+        # 2. 轮询结果（最多等 600 秒 = 10 分钟）
+        for attempt in range(200):
             time.sleep(3)
             poll_resp = client.post(
                 f"{base_url}/v1/draw/result",
@@ -183,7 +184,7 @@ def _call_grsai_api(
                         "error": f"GrsAI 生成失败: {fail_reason}"}
 
         return {"success": False, "image_base64": None, "text": None,
-                "error": "GrsAI 任务超时（120秒），请重试"}
+                "error": "GrsAI 任务超时（900秒），请重试"}
 
 
 # ── 统一入口 ─────────────────────────────────────────────

@@ -1,4 +1,4 @@
-"""AI 图片风格迁移 — 免费1次/天，¥0.8/次"""
+"""AI换发型 — QQ邮箱登录 + 积分制 · 1次/天/设备免费"""
 import base64
 import hashlib
 import os
@@ -12,19 +12,24 @@ import streamlit as st
 from PIL import Image
 
 from api_client import call_image_api
-from config import DEFAULT_PROVIDER, FREE_TRIAL_LIMIT, PRICING, PROVIDERS, TRANSFER_MODES
+from auth import can_send_code, send_code, verify_code, clean_expired_codes
+from config import (
+    DEFAULT_PROVIDER, FREE_TRIAL_LIMIT, POINTS_PER_USE,
+    POINTS_REGISTER_BONUS, POINTS_MONTHLY, POINTS_MONTHLY_PRICE,
+    PRICING, PROVIDERS, TRANSFER_MODES,
+)
 from db import (
-    add_balance, check_can_generate, create_user, deduct_balance,
-    get_or_create_device, get_stats, get_user, link_device_to_user,
-    record_usage, set_premium,
+    add_points, create_user, deduct_points, get_or_create_device,
+    get_stats, get_user, get_user_by_email, link_device_to_user,
+    record_usage, set_premium, check_can_generate,
 )
 
-ADMIN_PASSWORD = "admin888"  # 后台管理密码，生产环境请修改
+ADMIN_PASSWORD = "admin888"
 
 # ── 页面配置 ─────────────────────────────────────────────
 st.set_page_config(
-    page_title="AI 图片风格迁移",
-    page_icon="🎨",
+    page_title="AI换发型",
+    page_icon="💇",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -44,14 +49,17 @@ st.markdown("""
                   padding: 0.8rem; text-align: center; margin: 0.8rem 0; }
     .login-box { background: #f0f8ff; border: 1px solid #b8daff; border-radius: 8px;
                  padding: 0.8rem; margin: 0.4rem 0; }
+    .points-badge { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white; border-radius: 8px; padding: 0.6rem; text-align: center; }
+    .email-tag { background: #e8f5e9; border-radius: 4px; padding: 0.15rem 0.4rem;
+                 font-size: 0.8rem; color: #2e7d32; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── 设备追踪（无 JS，纯 HTTP 指纹 + 会话） ────────────────
-# 优先级：query param > HTTP 指纹 > 随机生成
+# ── 设备追踪 ────────────────────────────────────────────
 
 def _get_fingerprint() -> str:
-    """从 HTTP 请求头生成设备指纹"""
+    """HTTP 请求头生成设备指纹"""
     try:
         headers = st.context.headers
         ip = (
@@ -60,16 +68,17 @@ def _get_fingerprint() -> str:
             or headers.get("Host", "")
         )
         ua = headers.get("User-Agent", "")
-        raw = f"{ip}|{ua}"
-        if raw.strip() == "|":
+        al = headers.get("Accept-Language", "")
+        ae = headers.get("Accept-Encoding", "")
+        raw = f"{ip}|{ua}|{al}|{ae}"
+        if raw.strip() == "|||":
             return ""
-        return "dev_" + hashlib.md5(raw.encode()).hexdigest()[:12]
+        return "dev_" + hashlib.sha256(raw.encode()).hexdigest()[:16]
     except Exception:
         return ""
 
 
 if "device_id" not in st.session_state:
-    # 1. 优先从 URL 参数读取（用户可分享带 did 的链接）
     try:
         params = st.query_params
         if "did" in params and params["did"]:
@@ -78,17 +87,12 @@ if "device_id" not in st.session_state:
         pass
 
 if "device_id" not in st.session_state:
-    # 2. 尝试 HTTP 指纹
     fp = _get_fingerprint()
-    if fp:
-        st.session_state.device_id = fp
-    else:
-        # 3. 降级：随机 ID（每次会话不同）
-        st.session_state.device_id = "dev_" + uuid.uuid4().hex[:12]
+    st.session_state.device_id = fp if fp else "dev_" + uuid.uuid4().hex[:12]
 
 did = st.session_state.device_id
 
-# ── 会话状态 ─────────────────────────────────────────────
+# ── 会话状态初始化 ───────────────────────────────────────
 device = get_or_create_device(did)
 check = check_can_generate(did, FREE_TRIAL_LIMIT)
 
@@ -98,15 +102,32 @@ if "provider" not in st.session_state:
     st.session_state.provider = DEFAULT_PROVIDER
 if "user_id" not in st.session_state:
     st.session_state.user_id = device.get("linked_user")
-if "show_register" not in st.session_state:
-    st.session_state.show_register = False
 if "show_admin" not in st.session_state:
     st.session_state.show_admin = False
+# 登录流程状态
+if "login_step" not in st.session_state:
+    st.session_state.login_step = "input_email"  # input_email | input_code
+if "login_email" not in st.session_state:
+    st.session_state.login_email = ""
 
 
 def _check_api_key(provider: str) -> bool:
     key_map = {"google": "GOOGLE_API_KEY", "laozhang": "LAOZHANG_API_KEY", "grsai": "GRSAI_API_KEY"}
     return bool(os.getenv(key_map.get(provider, ""), ""))
+
+
+def _get_client_ip() -> str:
+    """获取客户端 IP"""
+    try:
+        headers = st.context.headers
+        return (
+            headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            or headers.get("X-Real-IP", "")
+            or headers.get("Host", "")
+            or "127.0.0.1"
+        )
+    except Exception:
+        return "127.0.0.1"
 
 
 def save_uploaded_file(uploaded_file) -> str:
@@ -123,13 +144,40 @@ with st.sidebar:
     user = get_user(user_id) if user_id else None
 
     if user:
-        st.success(f"👤 {user['username']}")
-        st.metric("💰 余额", f"¥{user['balance']:.2f}")
-        st.metric("📊 已用", f"{user['total_used']} 次")
-        if st.button("🚪 退出", use_container_width=True):
+        # ── 已登录 ─────────────────────────────────────
+        st.success(f"📧 {user.get('email', '')}")
+        st.markdown(f"""
+        <div class="points-badge">
+            <span style="font-size:1.5rem;font-weight:bold;">✨ {user['points']}</span> 积分<br>
+            <small>= {user['points'] // POINTS_PER_USE} 次生成</small>
+        </div>
+        """, unsafe_allow_html=True)
+        st.metric("📊 已用", f"{user.get('total_used', 0)} 次")
+
+        # 充值入口
+        with st.expander("💳 充值积分"):
+            st.markdown(f"""
+            <div class="price-card rec">
+                <strong>⚡ 包月</strong><br>
+                <span class="price">¥{POINTS_MONTHLY_PRICE}</span> = {POINTS_MONTHLY} 积分<br>
+                <small>≈ {POINTS_MONTHLY // POINTS_PER_USE} 次</small>
+            </div>
+            """, unsafe_allow_html=True)
+            qr_path = Path(__file__).parent / "static" / "qrcode.png"
+            if qr_path.exists():
+                st.image(str(qr_path), caption="微信赞赏码 ¥9.9", use_container_width=True)
+            st.warning(f"⚠️ 付款后截图发给客服时，请备注你的邮箱：**{user['email']}**")
+            st.info("📱 扫码赞赏 → 截图发客服 → 秒到账")
+            st.caption("客服微信: SodaCao")
+
+        if st.button("🚪 退出登录", use_container_width=True):
             st.session_state.user_id = None
+            st.session_state.login_step = "input_email"
+            st.session_state.login_email = ""
             st.rerun()
+
     else:
+        # ── 未登录 ─────────────────────────────────────
         today_used = device.get("today_used", 0)
         remaining = max(0, FREE_TRIAL_LIMIT - today_used)
         if device.get("premium"):
@@ -141,40 +189,67 @@ with st.sidebar:
 
         st.caption(f"🖥️ 设备: ...{did[-8:]}")
 
-        # 登录/注册
         st.divider()
-        if not st.session_state.show_register:
-            login_name = st.text_input("用户名", key="ln", placeholder="输入用户名登录")
+
+        # QQ邮箱登录
+        st.markdown("### 📧 QQ邮箱登录")
+        st.caption(f"注册即送 {POINTS_REGISTER_BONUS} 积分")
+
+        if st.session_state.login_step == "input_email":
+            email_input = st.text_input("QQ邮箱", key="login_email_input",
+                                        placeholder="123456789@qq.com")
             c1, c2 = st.columns(2)
             with c1:
-                if st.button("登录", use_container_width=True) and login_name:
-                    uid = f"user_{login_name}"
-                    u = get_user(uid)
-                    if u:
-                        st.session_state.user_id = uid
+                if st.button("📩 发送验证码", use_container_width=True, type="primary"):
+                    email = email_input.strip() if email_input else ""
+                    if not email or "@" not in email:
+                        st.error("请输入正确的邮箱地址")
+                    else:
+                        ip = _get_client_ip()
+                        result = send_code(email, ip)
+                        if result["success"]:
+                            st.session_state.login_email = email
+                            st.session_state.login_step = "input_code"
+                            st.success(result.get("message", "验证码已发送"))
+                            st.rerun()
+                        else:
+                            st.error(result.get("error", "发送失败"))
+            with c2:
+                pass
+
+        elif st.session_state.login_step == "input_code":
+            st.info(f"验证码已发送至 **{st.session_state.login_email}**")
+            code_input = st.text_input("6位验证码", key="code_input",
+                                       placeholder="输入验证码", max_chars=6)
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("✅ 验证登录", use_container_width=True, type="primary"):
+                    email = st.session_state.login_email
+                    result = verify_code(email, code_input.strip() if code_input else "")
+                    if result["success"]:
+                        uid = create_user(email)
                         link_device_to_user(did, uid)
+                        st.session_state.user_id = uid
+                        st.session_state.login_step = "input_email"
+                        st.success("登录成功！")
                         st.rerun()
                     else:
-                        st.error("用户不存在")
+                        st.error(result.get("error", "验证失败"))
             with c2:
-                if st.button("注册", use_container_width=True):
-                    st.session_state.show_register = True
-                    st.rerun()
-        else:
-            reg_name = st.text_input("设置用户名", key="rn", placeholder="字母或中文")
-            c1, c2 = st.columns(2)
-            with c1:
-                if st.button("确认注册", use_container_width=True) and reg_name:
-                    uid = create_user(reg_name)
-                    link_device_to_user(did, uid)
-                    st.session_state.user_id = uid
-                    st.session_state.show_register = False
-                    st.success("注册成功！")
-                    st.rerun()
-            with c2:
-                if st.button("← 返回", use_container_width=True):
-                    st.session_state.show_register = False
-                    st.rerun()
+                if st.button("🔄 重发", use_container_width=True):
+                    ip = _get_client_ip()
+                    email = st.session_state.login_email
+                    send_result = send_code(email, ip)
+                    if send_result["success"]:
+                        st.success("验证码已重新发送")
+                        st.rerun()
+                    else:
+                        st.error(send_result.get("error", "重发失败"))
+
+            if st.button("← 换邮箱", use_container_width=True):
+                st.session_state.login_step = "input_email"
+                st.session_state.login_email = ""
+                st.rerun()
 
     st.divider()
 
@@ -209,27 +284,15 @@ with st.sidebar:
     # ── 定价 ──
     st.markdown("### 💰 定价")
     st.markdown(f"""
-    <div class="price-card"><strong>🎁 免费</strong><br><small>每设备 {FREE_TRIAL_LIMIT}次/天</small></div>
-    <div class="price-card rec"><strong>⭐ 按次</strong><br><span class="price">¥0.8/次</span><br><small>注册充值</small></div>
+    <div class="price-card"><strong>🎁 免费</strong><br><small>每设备 {FREE_TRIAL_LIMIT} 次/天</small></div>
+    <div class="price-card rec"><strong>⭐ 积分制</strong><br><span class="price">{POINTS_PER_USE}分/次</span><br><small>注册送{POINTS_REGISTER_BONUS}分</small></div>
+    <div class="price-card"><strong>💎 包月</strong><br><span class="price">¥{POINTS_MONTHLY_PRICE}</span><br><small>{POINTS_MONTHLY}积分 ≈ {POINTS_MONTHLY // POINTS_PER_USE}次</small></div>
     """, unsafe_allow_html=True)
 
-    # 充值
     if user:
-        st.divider()
-        st.markdown("### 💳 充值")
-        code = st.text_input("充值码", placeholder="输入充值码")
-        if code and st.button("兑换", use_container_width=True):
-            if code.startswith("ADMIN"):
-                amt = float(re.search(r'(\d+)', code).group(1)) if re.search(r'(\d+)', code) else 10
-                add_balance(user_id, amt, f"充值码: {code}")
-                st.success(f"充值 ¥{amt} 成功！")
-                st.rerun()
-            else:
-                st.error("无效充值码")
-        st.caption("客服微信: SodaCao")
+        st.caption(f"💰 成本 ¥0.02/次 · 售价约 ¥0.88/次")
 
     st.divider()
-    st.caption(f"成本 ¥0.02/次 · 售价 ¥0.80/次 · 毛利 ¥0.78/次")
 
     # ── 后台管理入口 ──
     with st.expander("🔧 后台管理"):
@@ -241,32 +304,45 @@ with st.sidebar:
 # ── 后台管理页面 ──────────────────────────────────────────
 if st.session_state.show_admin:
     st.markdown("## 🔧 后台管理")
+
+    # 清理过期验证码
+    cleaned = clean_expired_codes()
+    if cleaned:
+        st.caption(f"🧹 已清理 {cleaned} 条过期验证码")
+
     stats = get_stats()
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         st.metric("总设备", stats["total_devices"])
     with col2:
-        st.metric("总使用", stats["total_usage"])
+        st.metric("总用户", stats["total_users"])
     with col3:
-        st.metric("今日使用", stats["today_usage"])
+        st.metric("总使用", stats["total_usage"])
     with col4:
+        st.metric("今日使用", stats["today_usage"])
+    with col5:
         st.metric("总收入", f"¥{stats['total_revenue']:.2f}")
 
     st.divider()
 
-    tab1, tab2, tab3 = st.tabs(["👥 用户管理", "📱 设备管理", "💳 充值操作"])
+    tab1, tab2, tab3 = st.tabs(["👥 用户管理", "📱 设备管理", "💳 充值积分"])
 
     with tab1:
-        from db import _read_db
-        db = _read_db()
+        import json
+        from pathlib import Path
+        db_path = Path(__file__).parent / "data" / "db.json"
+        db = json.loads(db_path.read_text(encoding="utf-8")) if db_path.exists() else {"users": {}, "devices": {}}
         users = db.get("users", {})
         if users:
             for uid, u in users.items():
-                with st.expander(f"{u['username']} | 余额 ¥{u['balance']:.2f} | {u['total_used']}次"):
+                points = u.get("points", 0)
+                with st.expander(f"{u.get('email', uid)} | ✨ {points}分 | {u.get('total_used', 0)}次"):
                     st.write(f"注册时间: {u.get('registered', '?')}")
                     st.write(f"绑定设备: {u.get('device_ids', [])}")
-                    st.write(f"累计消费: ¥{u.get('total_spent', 0):.2f}")
+                    st.write(f"累计消耗积分: {u.get('total_spent_points', 0)}")
+                    if u.get("recharge_log"):
+                        st.write("充值记录:", u["recharge_log"])
         else:
             st.info("暂无用户")
 
@@ -277,16 +353,28 @@ if st.session_state.show_admin:
                 premium_badge = "⭐" if d.get("premium") else ""
                 today = __import__('datetime').date.today().isoformat()
                 tu = d.get("daily_usage", {}).get(today, 0)
-                st.write(f"{premium_badge} `...{did_key[-12:]}` | 今日{tu}次 | 累计{d.get('total_usage',0)}次")
+                linked = d.get("linked_user", "")
+                email = ""
+                if linked:
+                    u = get_user(linked)
+                    email = u.get("email", "") if u else ""
+                st.write(f"{premium_badge} `...{did_key[-12:]}` | 今日{tu}次 | 累计{d.get('total_usage',0)}次 | {email}")
 
     with tab3:
-        target_user = st.text_input("目标用户名", key="admin_target")
-        recharge_amount = st.number_input("充值金额", min_value=1.0, max_value=1000.0, value=10.0, step=10.0)
-        note = st.text_input("备注", value="管理员充值")
-        if st.button("确认充值", type="primary") and target_user:
-            result = add_balance(f"user_{target_user}", recharge_amount, note)
+        st.markdown("#### 给用户充值积分")
+        target_email = st.text_input("用户邮箱", key="admin_target")
+        recharge_points = st.number_input("积分数量", min_value=888, max_value=100000,
+                                          value=10000, step=1000)
+        note = st.text_input("备注", value="赞赏码充值")
+        if st.button("确认充值", type="primary") and target_email:
+            uid = f"user_{target_email.strip()}"
+            u = get_user(uid)
+            if not u:
+                # 用户不存在，先创建
+                uid = create_user(target_email.strip())
+            result = add_points(uid, int(recharge_points), note)
             if result["success"]:
-                st.success(f"已为 {target_user} 充值 ¥{recharge_amount}，当前余额 ¥{result['balance']:.2f}")
+                st.success(f"已为 {target_email} 充值 {recharge_points} 积分，当前 {result['points']} 分")
             else:
                 st.error(result["error"])
 
@@ -302,13 +390,13 @@ if st.session_state.show_admin:
         st.session_state.show_admin = False
         st.rerun()
 
-    st.stop()  # 在后台页面时不显示主界面
+    st.stop()
 
 # ── 主界面 ───────────────────────────────────────────────
 st.markdown(
     """<div class="main-header">
-    <h1>🎨 AI 图片风格迁移</h1>
-    <p>上传你的照片 + 参考图片 → AI 自动融合</p>
+    <h1>💇 AI 换发型</h1>
+    <p>上传你的照片 + 参考发型 → AI 自动融合</p>
 </div>""",
     unsafe_allow_html=True,
 )
@@ -336,8 +424,8 @@ with c1:
         st.image(user_photo, use_container_width=True)
 
 with c2:
-    st.markdown("### 🖼️ 参考图片")
-    st.caption("任何照片，AI 自动提取特征")
+    st.markdown("### 🖼️ 参考发型")
+    st.caption("任何照片，AI 自动提取发型")
     ref_photo = st.file_uploader("选择参考图", type=["jpg", "jpeg", "png", "webp"], key="rp")
     if ref_photo:
         st.image(ref_photo, use_container_width=True)
@@ -361,26 +449,46 @@ with gc2:
     elif not has_photos:
         st.info("👆 上传两张照片即可开始")
 
-    elif not can_gen["allowed"] and not user:
+    elif not can_gen["allowed"] and not user and can_gen["reason"] == "daily_limit":
         st.markdown(f"""
         <div class="limit-warn">
         <h4>🔒 今日免费 {FREE_TRIAL_LIMIT} 次已用完</h4>
-        <p>注册充值 ¥0.80/次 继续使用，或明天再来免费</p>
+        <p>QQ邮箱登录送 {POINTS_REGISTER_BONUS} 积分（可生成 {POINTS_REGISTER_BONUS // POINTS_PER_USE} 次）</p>
         </div>""", unsafe_allow_html=True)
-        if st.button("📝 免费注册", use_container_width=True, type="primary"):
-            st.session_state.show_register = True
+        if st.button("📧 QQ邮箱登录（送888积分）", use_container_width=True, type="primary"):
+            st.session_state.login_step = "input_email"
             st.rerun()
 
-    elif can_gen["reason"] == "balance" and user:
-        st.info(f"💰 扣 ¥0.80（余额 ¥{user['balance']:.2f}）")
+    elif not can_gen["allowed"] and user and can_gen["reason"] == "no_points":
+        st.markdown(f"""
+        <div class="limit-warn">
+        <h4>🔒 积分不足</h4>
+        <p>当前 {user['points']} 积分，每次需要 {POINTS_PER_USE} 积分</p>
+        <p>充值 ¥{POINTS_MONTHLY_PRICE} 得 {POINTS_MONTHLY} 积分</p>
+        </div>""", unsafe_allow_html=True)
+        with st.expander("💳 充值（微信赞赏码）"):
+            st.info("📱 微信扫码赞赏 ¥9.9 → 截图发客服微信 SodaCao → 秒到账")
 
-    elif not can_gen["allowed"] and user:
-        st.error(f"💰 余额不足（¥{user['balance']:.2f}），请充值")
+    elif can_gen["reason"] == "points" and user:
+        st.info(f"✨ 扣 {POINTS_PER_USE} 积分（余额 {user['points']} 分）")
+
+    elif can_gen["reason"] == "free" and not user:
+        remaining_after = can_gen.get("remaining_free", 0)
+        st.info(f"🎁 今日免费还剩 {remaining_after + 1} 次")
 
     can_click = (has_key and has_photos and can_gen["allowed"]
                  and not (selected_mode == "custom" and not custom_prompt))
 
-    btn_label = "✨ 开始生成" if can_gen["allowed"] else "🔒 免费已用完"
+    if can_gen["allowed"]:
+        if can_gen["reason"] == "free":
+            btn_label = f"🎁 免费生成（今日剩{can_gen.get('remaining_free', 0) + 1}次）"
+        elif can_gen["reason"] == "points":
+            btn_label = f"✨ 生成（-{POINTS_PER_USE}积分）"
+        else:
+            btn_label = "✨ 开始生成"
+    else:
+        btn_label = "🔒 不可用"
+
     generate_clicked = st.button(btn_label, type="primary", use_container_width=True,
                                  disabled=not can_click)
 
@@ -397,15 +505,17 @@ if generate_clicked and can_click:
 
         cost_note = ""
         refund_needed = False
-        if gen_check["reason"] == "balance" and user:
-            result = deduct_balance(st.session_state.user_id, 0.80)
+
+        # 积分扣费
+        if gen_check["reason"] == "points" and user:
+            result = deduct_points(st.session_state.user_id, POINTS_PER_USE)
             if not result["success"]:
                 st.error(result["error"])
                 st.stop()
-            cost_note = f"已扣 ¥0.80，余额 ¥{result['balance']:.2f}"
+            cost_note = f"已扣 {POINTS_PER_USE} 积分，余额 {result['points']} 分"
             refund_needed = True
 
-        with st.spinner("🪄 AI 处理中（30-60秒）..."):
+        with st.spinner("🪄 AI 处理中（约 1-2 分钟）..."):
             api_result = call_image_api(
                 user_path, ref_path, mode=selected_mode,
                 custom_prompt=custom_prompt, provider_key=st.session_state.provider,
@@ -433,14 +543,18 @@ if generate_clicked and can_click:
             st.download_button("📥 下载", img_bytes, "result.jpg", "image/jpeg", use_container_width=True)
 
             new_check = check_can_generate(did, FREE_TRIAL_LIMIT)
-            if new_check["remaining_free"] > 0:
-                st.info(f"💡 今日还剩 {new_check['remaining_free']} 次免费")
-            elif not user:
-                st.warning("⚠️ 免费次数用完，注册 ¥0.80/次 继续")
+            if new_check["reason"] == "free":
+                remaining_after = new_check.get("remaining_free", 0)
+                if remaining_after > 0:
+                    st.info(f"💡 今日还剩 {remaining_after} 次免费")
+                else:
+                    st.warning("⚠️ 今日免费用完，QQ邮箱登录继续")
+            elif new_check["reason"] == "points" and user:
+                st.info(f"💡 积分余额 {user['points']} 分，还可生成 {user['points'] // POINTS_PER_USE} 次")
         else:
-            if refund_needed:
-                add_balance(st.session_state.user_id, 0.80, "失败退款")
-                st.warning("生成失败，已退款 ¥0.80")
+            if refund_needed and user:
+                add_points(st.session_state.user_id, POINTS_PER_USE, "失败退款")
+                st.warning(f"生成失败，已退还 {POINTS_PER_USE} 积分")
             st.error(f"❌ {api_result['error']}")
     finally:
         try:
@@ -464,7 +578,7 @@ st.divider()
 pc = PROVIDERS[st.session_state.provider]["cost_per_call"]
 st.markdown(
     f"""<div class="cost-hint">
-    API成本 ¥{pc:.3f}/次 · 售价 ¥0.80/次 · 免费 {FREE_TRIAL_LIMIT}次/天/设备
+    API成本 ¥{pc:.3f}/次 · 积分 {POINTS_PER_USE}分/次 · 免费 {FREE_TRIAL_LIMIT}次/天/设备
     </div>""",
     unsafe_allow_html=True,
 )
