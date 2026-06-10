@@ -53,17 +53,27 @@ TRANSFER_MODES = {
         "label": "💇 换发型",
         "icon": "💇",
         "prompt_template": (
-            "Generate a completely new, photorealistic portrait. "
-            "The person is the same individual as in Image 1 — same identity, facial features, expression, skin tone, and clothing. "
-            "However, their hairstyle has been professionally changed to match the hairstyle from Image 2. "
-            "Carefully analyze Image 2: replicate its haircut shape, hair color, length, texture, curl pattern, bangs/fringe style, part line, and volume. "
-            "Naturally adapt this hairstyle to the head shape and face framing of the person in Image 1. "
-            "The hair must blend seamlessly with the scalp — render realistic hair roots, natural shadows at the hairline, and consistent lighting that matches Image 1's original light direction. "
-            "Do NOT simply paste or overlay hair. Render the entire image as one unified photograph: "
-            "hair, face, background, clothing, and lighting all belong to the same scene. "
-            "The result should look like a genuine before-and-after photo from a high-end hair salon — "
-            "same person, same setting, new hairstyle. "
-            "Output: a single realistic photograph, no text overlay, no split-screen, no collage."
+            "Task: Give the person in Image 1 the hairstyle from Image 2. "
+            "CRITICAL — Head pose & angle adaptation: "
+            "Image 1 and Image 2 may have different head angles, tilts, or camera positions. "
+            "You MUST first detect the exact head orientation, camera angle, and face direction in Image 1. "
+            "Then mentally rotate and adjust the hairstyle from Image 2 to fit Image 1's angle. "
+            "The hairstyle should look like it naturally exists on Image 1's head at THAT angle — "
+            "not pasted from a different perspective. Hair volume, part line placement, and fringe shape "
+            "must all respect the 3D orientation of Image 1's head. "
+            "Lighting & shadow: "
+            "Analyze the light source direction, intensity, and color temperature in Image 1. "
+            "Re-light the new hairstyle to match exactly — natural scalp shadows at the hairline, "
+            "consistent highlight placement, same ambient occlusion. "
+            "Hair physics & scale: "
+            "Measure the head size in Image 1. Scale the hairstyle from Image 2 proportionally. "
+            "Do NOT copy hair volume literally — adapt it to the actual head dimensions in Image 1. "
+            "If Image 2 shows long hair, render it falling naturally with gravity relative to Image 1's head tilt. "
+            "Identity preservation: "
+            "Keep the person's face, facial features, expression, skin tone, and clothing identical to Image 1. "
+            "Only the hair changes. "
+            "Output: a SINGLE realistic photograph — same person, same background, same lighting, new hairstyle. "
+            "No text, no watermark, no split-screen, no before/after collage."
         ),
     },
     "outfit": {
