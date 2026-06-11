@@ -4,6 +4,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Streamlit Cloud: 自动注入 secrets 到环境变量，兼容本地 .env
+try:
+    import streamlit as st
+    for _key, _val in st.secrets.items():
+        if _key not in os.environ and not _key.startswith("_"):
+            os.environ[_key] = str(_val)
+except Exception:
+    pass
+
 # ── API 提供商配置 ──────────────────────────────────────
 # 按优先级排序，第一个有 key 的会被默认选中
 
